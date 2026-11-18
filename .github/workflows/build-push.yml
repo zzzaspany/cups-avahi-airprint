@@ -1,0 +1,172 @@
+# Why this workflow exists.
+#
+# Upstream builds this image in AWS CodeBuild (buildspec.yml, buildspec-manifest.yml) and
+# publishes to Docker Hub. That pipeline stopped producing images: docker.io's newest tag is
+# 2.1.3, pushed 2026-06-17, while version.txt in this repository reads 2.2.0 and master kept
+# receiving fixes. So the published image is a frozen snapshot of June's Alpine edge, and the
+# packages inside it have been accumulating fixable CVEs ever since - 21 CRITICAL by 2026-11-18,
+# every one of them with a fix already shipped by Alpine.
+#
+# Nothing here changes how the image is built. It builds the same Dockerfile on GitHub's own
+# runners and publishes to ghcr.io, so that "rebuilt recently" stops being a thing we hope for.
+# Freshness is the entire product, which is why there is a weekly schedule below.
+
+name: Build and Push
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  # Weekly. The image is a snapshot of Alpine edge at build time, so an image nobody rebuilds
+  # rots on its own without a single commit landing here.
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: zzzaspany/cups-avahi-airprint
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # gutenprint is compiled from source inside the build, so this is minutes, not seconds.
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Read version.txt
+        id: ver
+        run: |
+          v="$(tr -d '[:space:]' < version.txt)"
+          # An empty version.txt would otherwise publish a tag literally named ":" and succeed.
+          test -n "$v"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v4
+
+      # Built into the local daemon and NOT pushed. The scan two steps down decides whether this
+      # image is fit to publish; pushing first and scanning after would mean the registry always
+      # holds whatever came out of the build, which is the failure mode this workflow exists to end.
+      - name: Build (local only)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          push: false
+          tags: candidate:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # A rebuild that produces a broken image looks exactly like a rebuild that produces a good
+      # one until something tries to print. These are the paths a working relay must have; each was
+      # verified present in the 2.1.3 image before being asserted here.
+      - name: Smoke test the built image
+        run: |
+          docker run --rm --entrypoint "" candidate:ci sh -eu -c '
+            test -x /usr/sbin/cupsd
+            test -x /usr/sbin/avahi-daemon
+            test -x /root/run_cups.sh
+            test -x /usr/lib/cups/backend/socket
+            test -x /usr/lib/cups/backend/dnssd
+            test -x /usr/lib/cups/backend/ipp
+            # brlaser and gutenprint are compiled from source by the Dockerfile. If either build
+            # silently fails, the image still runs and still cannot drive a printer.
+            test -x /usr/lib/cups/filter/rastertobrlaser
+            test -x /usr/lib/cups/filter/rastertogutenprint.5.3
+            # The Dockerfile rewrites this shebang; perl must survive in the final image.
+            head -1 /usr/sbin/cups-genppdupdate | grep -qx "#!/usr/bin/perl"
+            # Fork delta, asserted so an upstream merge cannot quietly restore it.
+            ! apk info -e hplip
+          '
+
+      - name: Export the image for scanning
+        run: docker save candidate:ci -o /tmp/candidate.tar
+
+      # Scanned from the exported tarball rather than over a mounted docker socket: the scanner
+      # needs to read one image, not to be handed the daemon.
+      #
+      # --ignorefile /dev/null on both passes, explicitly. Trivy auto-discovers .trivyignore from
+      # the working directory, so a suppression file added to this repository later would silently
+      # disarm the gate it is supposed to feed. There is no .trivyignore here and there should
+      # never need to be one: this image is ours to rebuild, which is the whole point.
+      - name: Trivy report (CRITICAL and HIGH, informational)
+        run: |
+          mkdir -p /tmp/trivy-cache
+          docker run --rm \
+            -v /tmp:/work -v /tmp/trivy-cache:/root/.cache/trivy \
+            aquasec/trivy:latest image \
+              --input /work/candidate.tar \
+              --scanners vuln --format table \
+              --severity CRITICAL,HIGH \
+              --ignorefile /dev/null \
+              --exit-code 0
+
+      # The gate: fixable CRITICAL only. An unfixed upstream CVE is not something a rebuild can
+      # clear, so failing on it would just teach everyone to ignore this job.
+      - name: Trivy gate (fixable CRITICAL only)
+        run: |
+          docker run --rm \
+            -v /tmp:/work -v /tmp/trivy-cache:/root/.cache/trivy \
+            aquasec/trivy:latest image \
+              --input /work/candidate.tar \
+              --scanners vuln --format table \
+              --severity CRITICAL --ignore-unfixed \
+              --ignorefile /dev/null \
+              --exit-code 1
+
+      - name: Log in to ghcr.io
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Four tags, each with a job:
+      #   2.2.0             upstream's own version, from version.txt
+      #   2.2.0-20261118    what a deployment pins. Immutable in practice, so a consumer that
+      #                     pins it gets the same bytes until it chooses to move.
+      #   latest            convenience, and what a bare `podman pull` resolves to
+      #   sha-1a2b3c4       traceable back to the commit
+      #
+      # The dated tag is the one that matters. A deployment pinning it will go red in its own
+      # vulnerability scan as the pinned image ages, and that is the signal to bump - rather than
+      # an unattended auto-update moving a printing service underneath whoever is printing.
+      - name: Push
+        if: github.event_name != 'pull_request'
+        run: |
+          set -eu
+          target="${REGISTRY}/${IMAGE_NAME}"
+          for tag in \
+            "${{ steps.ver.outputs.version }}" \
+            "${{ steps.ver.outputs.version }}-${{ steps.ver.outputs.date }}" \
+            latest \
+            "sha-$(echo "${GITHUB_SHA}" | cut -c1-7)"
+          do
+            echo "==> ${target}:${tag}"
+            docker tag candidate:ci "${target}:${tag}"
+            docker push "${target}:${tag}"
+          done
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### cups-avahi-airprint"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| version.txt | \`${{ steps.ver.outputs.version }}\` |"
+            echo "| dated tag | \`${{ steps.ver.outputs.version }}-${{ steps.ver.outputs.date }}\` |"
+            echo "| pushed | ${{ github.event_name != 'pull_request' }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
