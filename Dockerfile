@@ -1,6 +1,17 @@
 FROM alpine:3.20
 
 # Install the packages we need. Avahi will be included
+#
+# FORK DELTA: hplip is not installed here, where upstream installs it.
+#
+# hplip is HP's driver stack. Nothing in this image depends on it (`apk info -r hplip` lists no
+# reverse dependencies), none of the scripts under root/ reference it, and removing it takes the
+# `hp` CUPS backend with it while leaving fourteen others, socket/ipp/dnssd/driverless included.
+# It brought ten CRITICAL CVEs with it - CVE-2026-91097 through CVE-2026-91106, HP's own advisory
+# batch - each firing twice because hplip and hplip-libs both carry it.
+#
+# Re-add it if you front an HP printer. Do not re-add it on an upstream merge just because the
+# conflict puts it back: the CI smoke test asserts it is absent and will fail loudly.
 RUN echo -e "https://dl-cdn.alpinelinux.org/alpine/edge/testing\nhttps://dl-cdn.alpinelinux.org/alpine/edge/community\nhttps://dl-cdn.alpinelinux.org/alpine/edge/main" >> /etc/apk/repositories &&\
 	apk add --update cups \
 	cups-libs \
@@ -10,7 +21,6 @@ RUN echo -e "https://dl-cdn.alpinelinux.org/alpine/edge/testing\nhttps://dl-cdn.
 	cups-dev \
 	gcompat \
 	ghostscript \
-	hplip \
 	avahi \
 	dbus \
 	inotify-tools \
