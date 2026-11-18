@@ -14,6 +14,18 @@ if [ -n "$TZ" ]; then
     fi
 fi
 
+# FORK DELTA: the credential block runs with tracing off.
+#
+# `set -x` above traces every command with its arguments already expanded, so this block used to
+# print CUPSPASSWORD in clear text on every single start - twice: once as `+ '[' -z <password> ]`
+# and once as `+ echo <user>:<password>`. That goes to the container log, and from there into
+# whatever collects it. Measured on one host before this change: 20 copies of the password sitting
+# in the journal, the oldest a month old.
+#
+# Tracing is restored immediately afterwards, because it is genuinely useful for the rest of the
+# startup.
+set +x
+
 # Is CUPSADMIN set? If not, set to default
 if [ -z "$CUPSADMIN" ]; then
     CUPSADMIN="cupsadmin"
@@ -24,10 +36,15 @@ if [ -z "$CUPSPASSWORD" ]; then
     CUPSPASSWORD=$CUPSADMIN
 fi
 
-if [ $(grep -ci $CUPSADMIN /etc/shadow) -eq 0 ]; then
-    adduser -S -G lpadmin --no-create-home $CUPSADMIN
+# Quoted, and printf rather than echo: unquoted, a password containing whitespace or a glob
+# character was silently mangled or split before it ever reached chpasswd. That is a change in
+# behaviour from upstream, and a deliberate one.
+if [ "$(grep -ci "$CUPSADMIN" /etc/shadow)" -eq 0 ]; then
+    adduser -S -G lpadmin --no-create-home "$CUPSADMIN"
 fi
-echo $CUPSADMIN:$CUPSPASSWORD | chpasswd
+printf '%s:%s\n' "$CUPSADMIN" "$CUPSPASSWORD" | chpasswd
+
+set -x
 
 # Ensure AirPrint clients can submit print jobs without a password prompt.
 #

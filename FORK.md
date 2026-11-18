@@ -25,8 +25,8 @@ Nothing upstream did is wrong here. The packages are fixed; the fix just never g
 
 ## What this fork changes
 
-Two things, and deliberately nothing else — the value is in building the same Dockerfile recently,
-not in rewriting someone's working build.
+Three things, and deliberately nothing else — the value is in building the same Dockerfile
+recently, not in rewriting someone's working build.
 
 1. **`.github/workflows/build-push.yml`** — builds on GitHub's runners and publishes to
    `ghcr.io`, weekly as well as on every push, with a smoke test and a Trivy gate that both run
@@ -39,6 +39,21 @@ not in rewriting someone's working build.
    Re-add it if you front an HP printer; the Dockerfile says so at the point of removal.
    The images this fork was built for drive a Brother laser through `brlaser`, which the
    Dockerfile compiles from source and which the CI smoke test asserts is present.
+
+3. **`run_cups.sh` no longer traces the admin password.** The script runs under `set -x`, which
+   traces each command with its arguments already expanded, so the credential block printed
+   `CUPSPASSWORD` in clear text on every start — twice, once as `+ '[' -z <password> ]` and once
+   as `+ echo <user>:<password>`. On the host this fork was made for that had left 20 copies of
+   the password in the journal, the oldest a month old. Tracing is now off for that block and
+   restored immediately after.
+
+   CI asserts it stays off, with two positive controls alongside the absence check: a test that
+   only greps for a missing secret passes just as happily when the log is empty or the block was
+   deleted, so the job also requires evidence that the block ran and that tracing came back.
+
+   The same change quotes the expansions and uses `printf` instead of `echo`. Unquoted, a password
+   containing whitespace or a glob character was mangled before it reached `chpasswd`. That is a
+   deviation from upstream behaviour and an intentional one.
 
 ## Tags
 
@@ -61,9 +76,10 @@ git fetch upstream
 git merge upstream/master
 ```
 
-One conflict is expected and intended: the `apk add` list, where upstream still installs `hplip`.
-Resolve it by keeping it removed. The CI smoke test asserts its absence, so a merge that restores
-it fails rather than quietly shipping it.
+Two conflicts are expected and intended: the `apk add` list, where upstream still installs
+`hplip`, and the credential block in `root/root/run_cups.sh`. Resolve both by keeping the fork's
+version. CI asserts `hplip` is absent and that the password does not reach the log, so a merge
+that undoes either one fails rather than quietly shipping it.
 
 ## Licence
 

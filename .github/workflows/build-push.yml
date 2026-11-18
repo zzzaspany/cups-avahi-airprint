@@ -89,6 +89,38 @@ jobs:
             ! apk info -e hplip
           '
 
+      # Upstream's run_cups.sh runs under `set -x`, which traced the credential block with its
+      # arguments already expanded and so printed CUPSPASSWORD in clear text on every start. The
+      # fork turns tracing off around that block. This asserts it stays off.
+      #
+      # The two positive controls are the point. A test that only greps for the absence of a
+      # secret passes just as happily when the log is empty, when the container never started, or
+      # when the credential block was removed entirely - so this also requires proof that the
+      # block ran, and proof that tracing came back on afterwards.
+      - name: Assert the startup trace does not leak CUPSPASSWORD
+        run: |
+          set -eu
+          sentinel="sentinel-$(openssl rand -hex 12)"
+          cid=$(docker run -d -e CUPSADMIN=ciadmin -e CUPSPASSWORD="$sentinel" candidate:ci)
+          for _ in $(seq 1 30); do
+            docker logs "$cid" 2>&1 | grep -q "chpasswd" && break
+            sleep 2
+          done
+          logs=$(docker logs "$cid" 2>&1)
+          docker rm -f "$cid" >/dev/null
+
+          echo "$logs" | grep -q "chpasswd" \
+            || { echo "CONTROL FAILED: the credential block never ran, so this test proves nothing"; exit 1; }
+          echo "$logs" | grep -q -- "+ mkdir -p /config/ppd" \
+            || { echo "CONTROL FAILED: no trace after the block, so 'set -x' was not restored"; exit 1; }
+
+          if echo "$logs" | grep -qF -- "$sentinel"; then
+            echo "LEAK: CUPSPASSWORD appears in the container log"
+            echo "$logs" | grep -nF -- "$sentinel" | sed "s/$sentinel/<redacted>/g"
+            exit 1
+          fi
+          echo "OK: block ran, tracing restored, password absent from the log"
+
       - name: Export the image for scanning
         run: docker save candidate:ci -o /tmp/candidate.tar
 
