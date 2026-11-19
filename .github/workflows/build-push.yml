@@ -1,4 +1,12 @@
-# Why this workflow exists.
+# RETIRED 2026-11-19. This repository is archived; see the banner in README.md.
+#
+# The premise below is false and is kept only so the record is readable. Upstream's pipeline had
+# not stopped: 2.2.0 and latest were pushed to Docker Hub on 2026-11-17, multi-arch. The weekly
+# schedule has been removed so that un-archiving this repository does not quietly resume
+# publishing an image nobody is watching. push, pull_request and workflow_dispatch are kept, so
+# the build still works for anyone who wants to use this as a starting point.
+#
+# Why this workflow existed.
 #
 # Upstream builds this image in AWS CodeBuild (buildspec.yml, buildspec-manifest.yml) and
 # publishes to Docker Hub. That pipeline stopped producing images: docker.io's newest tag is
@@ -14,14 +22,15 @@
 name: Build and Push
 
 on:
-  push:
-    branches: [master]
-  pull_request:
-    branches: [master]
-  # Weekly. The image is a snapshot of Alpine edge at build time, so an image nobody rebuilds
-  # rots on its own without a single commit landing here.
-  schedule:
-    - cron: '17 4 * * 1'
+  # Manual only, as of 2026-11-19. This fork is retired, so nothing should publish an image by
+  # itself. What was here before:
+  #
+  #   push:         branches: [master]
+  #   pull_request: branches: [master]
+  #   schedule:     - cron: '17 4 * * 1'
+  #
+  # Restore them only if this repository is un-archived and somebody is going to watch what it
+  # publishes. The build itself is unchanged and still works from the Actions tab.
   workflow_dispatch:
 
 permissions:
