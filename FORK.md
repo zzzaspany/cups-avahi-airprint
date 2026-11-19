@@ -25,8 +25,8 @@ Nothing upstream did is wrong here. The packages are fixed; the fix just never g
 
 ## What this fork changes
 
-Three things, and deliberately nothing else — the value is in building the same Dockerfile
-recently, not in rewriting someone's working build.
+Five things. The first three were deliberately minimal, to get a fresh image published without
+touching how it is built. The last two are the restructure that those three made possible.
 
 1. **`.github/workflows/build-push.yml`** — builds on GitHub's runners and publishes to
    `ghcr.io`, weekly as well as on every push, with a smoke test and a Trivy gate that both run
@@ -54,6 +54,70 @@ recently, not in rewriting someone's working build.
    The same change quotes the expansions and uses `printf` instead of `echo`. Unquoted, a password
    containing whitespace or a glob character was mangled before it reached `chpasswd`. That is a
    deviation from upstream behaviour and an intentional one.
+
+4. **`FROM alpine:3.24`, with the `edge` repositories removed.** Upstream pins `alpine:3.20` and
+   then appends all three Alpine `edge` repositories on top. 3.20 is past end of life, which Trivy
+   says out loud on every scan of it:
+
+       WARN  This OS version is no longer supported by the distribution  version="3.20.10"
+       WARN  The vulnerability detection may be insufficient because security updates are not provided
+
+   A clean report against an unsupported branch is not reassurance, it is missing data.
+
+   The `edge` repositories were almost certainly there to reach a newer `hplip` than 3.20 carried:
+   3.20 has `3.23.12-r2` and upstream wanted `3.26.x`. With hplip gone, every remaining package is
+   in 3.24's own `main` and `community` — checked one by one before the change — so the image stops
+   mixing a stable base with a rolling one. Trivy now matches it against `repository="3.24"` rather
+   than `repository="edge"`.
+
+5. **Two stages.** The toolchain that compiles brlaser and gutenprint stays in the builder and
+   never reaches the published image.
+
+   This is a restructure rather than a cleanup because deleting `build-base` in a later layer would
+   not shrink anything: a deletion in a new layer only adds a whiteout over files that remain
+   below. An earlier attempt at a derived image (`FROM 2.1.3` plus `apk upgrade`) proved the point
+   by growing from 730 MB to **1.29 GB**. The only way the toolchain leaves is never to be in the
+   final stage.
+
+   Gutenprint's build artifacts are pruned in the builder for the same reason, before the `COPY`.
+   The largest single item is 21 MB of translated option names, which nothing reads on a headless
+   relay.
+
+### What that comes to
+
+| | upstream `2.1.3` | this fork |
+|---|---|---|
+| size | 730 MB | **230 MB** |
+| packages | 209 | **110** |
+| Alpine | 3.20.10, past EOL | **3.24.4** |
+| findings at CRITICAL or HIGH | 152 | **0** |
+| Trivy EOL warning | yes | **no** |
+
+The last row matters as much as the one above it. The zero means something now, rather than being
+an artifact of a branch Alpine no longer publishes data for.
+
+### The assertions in the Dockerfile
+
+The final stage ends with two `RUN` blocks that assert outcomes rather than trusting commands.
+They are the part of this fork most worth reading before changing anything.
+
+Upstream applies eleven `sed -i` edits to `cupsd.conf` and `avahi-daemon.conf`. A `sed` whose
+pattern does not match exits 0 and changes nothing, so a base-image update can silently drop one
+and the build still succeeds. The cost is not cosmetic: lose the first edit and cupsd listens on
+localhost only, and AirPrint stops working with nothing in any log to say why. One of the eleven is
+**already** a no-op — `Browsing Off` matches neither 3.24 nor 3.20, and both published images carry
+`Browsing Yes` — so that assertion accepts `Yes` or `On` instead of demanding the substitution.
+
+The second block checks the image can drive a printer: both source-compiled filters exist, the
+gutenprint XML data is present, `cups-genppdupdate` kept its perl shebang, and four binaries report
+no unresolved libraries.
+
+That last check asks only whether anything is **unresolved**. A first version demanded that the
+filter resolve `libgutenprint`, and failed the build — wrongly. Nothing links `libgutenprint.so`
+dynamically, in this image or in the one upstream publishes; both have it compiled in statically.
+The Dockerfile says so at that line, so the wrong assertion does not come back. The check also
+fails if `ldd` lists no libraries at all, because an absence test that looks at nothing passes
+every time.
 
 ## Tags
 
