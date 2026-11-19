@@ -1,3 +1,45 @@
+> # ⚠️ This fork is retired (2026-11-19)
+>
+> **It was built on a false premise, and the premise is corrected below rather than deleted.**
+>
+> This fork was created on 2026-11-18 because upstream's published image looked abandoned:
+> `2.1.3`, pushed 2026-06-17, appeared to be the newest tag on Docker Hub. It was not.
+> **`2.2.0` and `latest` were pushed on 2026-11-17**, the day before this fork existed, multi-arch
+> for amd64 and arm64, sharing index digest
+> `sha256:9cb48e29722dcf35a7c84c95dddca7ce96c1fde516fb8b9b788d2a1d77aca39c`.
+>
+> The maintainer explained why it looked idle: the 2.2.0 work was on a test branch, which
+> publishes to a separate test repository until it is merged. The mistake was on this side — a tag
+> list read on 2026-10-22 was reused on 2026-11-18 as though it were current, without being
+> measured again.
+>
+> **Upstream's `2.2.0` does the thing this fork was for.** The rebuild took `hplip` and
+> `hplip-libs` to `3.26.6-r0`, the version that fixes `CVE-2026-91097` … `CVE-2026-91106` — all
+> ten CRITICALs listed below. Measured 2026-11-19 with suppressions defeated, `2.2.0` reports
+> `Total: 3 (HIGH: 3, CRITICAL: 0)` and passes a fixable-CRITICAL gate, against `Total: 21
+> (CRITICAL: 21)` on `2.1.3` as the control.
+>
+> ## What is still worth something here
+>
+> - **[chuckcharlie/cups-avahi-airprint#61](https://github.com/chuckcharlie/cups-avahi-airprint/pull/61)
+>   is open and still needed.** The entrypoint runs under `set -x`, so the credential block traces
+>   `CUPSPASSWORD` in clear text on every start. This is **still true in `2.2.0`** — verified by
+>   running the image with a random sentinel as the password and finding it twice in the log, with
+>   two positive controls beside it. That PR wraps the block in `set +x` / `set -x`. This
+>   repository is archived rather than deleted precisely so that PR's branch survives.
+> - **The multi-stage `Dockerfile` on `master`** builds the same functionality on `alpine:3.24`
+>   with no `edge` repositories and no build toolchain in the final image: **230 MB against
+>   upstream's 695 MB**, 110 packages against 209, and zero findings at CRITICAL or HIGH. If
+>   anyone wants a smaller or supported-base image, start there rather than from scratch.
+> - **`.github/workflows/build-push.yml`** was offered upstream as
+>   [#62](https://github.com/chuckcharlie/cups-avahi-airprint/pull/62) and declined. It still works
+>   if you want to build this yourself.
+>
+> **Use upstream's image**: `docker.io/chuckcharlie/cups-avahi-airprint:2.2.0`. The `ghcr.io`
+> images this repository published are frozen at 2026-11-18 and are not rebuilt or rescanned.
+>
+> Everything below is the original text, left as written.
+
 # About this fork
 
 This is a fork of [chuckcharlie/cups-avahi-airprint](https://github.com/chuckcharlie/cups-avahi-airprint),
